@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>JavaScriptスイカゲーム（連続落下可能版）</title>
+    <style>
+        body { 
+        margin: 0; 
+        overflow: hidden; 
+        background-color: #323232; 
+        /* 画面全体をFlexboxで縦に並べる設定 */
+        display: flex; 
+        flex-direction: column; 
+        align-items: center;
+        min-height: 100vh; /* ビューポート全体を使用 */
+    }
+    
+    /* 🌟 新規追加: コンソールバーのスタイル 🌟 */
+    #console-bar {
+        width: 100%;
+        height: 100px; /* バーの高さ */
+        background-color: #1a1a1a;
+        color: white;
+        text-align: center;
+        line-height: 100px;
+        font-size: 24px;
+        font-family: sans-serif;
+    }
+
+    /* ゲームキャンバスの親要素 */
+    #game-container {
+        /* ゲーム画面を中央に配置するための余白を上下に追加 */
+        padding-top: 20px; 
+    }
+
+    canvas { 
+        display: block; 
+        /* Matter.jsのキャンバスの描画をコンテナ内に合わせる */
+        border: 2px solid #555; 
+    }
+    </style>
+</head>
+<body>
+    <nav class="navbar bg-body-tertiary">
+        <div class = "container">
+            <a class="navbar-brand" href="/">ブログサイト</a>
+            <a class="nav-link" href="{% url 'game' %}">スイカゲームへ</a>
+        </div>
+</nav>
+    <div id="console-bar">
+        スコア: 0000 | NEXT: チェリー
+    </div>
+
+    <div id="game-container">
+        </div>
+    <script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
+
+    <script>
+        // --- 1. 初期設定とMatter.jsのセットアップ ---
+        
+        // Matter.jsのモジュールを使いやすく変数に代入
+        const Engine = Matter.Engine,
+              Render = Matter.Render,
+              World = Matter.World,
+              Bodies = Matter.Bodies,
+              Body = Matter.Body, 
+              Mouse = Matter.Mouse,
+              MouseConstraint = Matter.MouseConstraint,
+              Runner = Matter.Runner; 
+
+        // 画面サイズ 
+        const SCREEN_WIDTH = 1250;
+        const SCREEN_HEIGHT = 500;
+        const FLOOR_HEIGHT = 50; 
+        const WALL_THICKNESS = 50;
+
+        // フルーツの定義
+        const FRUIT_SPECS = [
+            { radius: 20, color: '#d93245', nextId: 1 },  // ID 0: チェリー
+            { radius: 25, color: '#e73562', nextId: 2 },  // ID 1: イチゴ
+            { radius: 30, color: '#522f60', nextId: 3 },  // ID 2: ブドウ
+            { radius: 35, color: '#f18d00', nextId: 4 },  // ID 3: デコポン
+            { radius: 40, color: '#ed6d3d', nextId: 5 },  // ID 4: カキ
+            { radius: 45, color: '#d9333f', nextId: 6 },  // ID 5: リンゴ
+            { radius: 50, color: '#deb887', nextId: 7 },  // ID 6: ナシ
+            { radius: 55, color: '#f09199', nextId: 8 },  // ID 7: モモ
+            { radius: 60, color: '#00fa9a', nextId: 9 },  // ID 8: パイナップル
+            { radius: 65, color: '#32cd32', nextId: 10 }, // ID 9: メロン
+            { radius: 70, color: '#228b22', nextId: 10 }, // ID 10: スイカ (最大)
+        ];
+        
+        // --- 落下機構用のグローバル変数 ---
+        const MIN_ID = 0; // チェリー
+        const MAX_ID = 4; // カキ
+        // ★ 落下状態を示すフラグは不要になりました
+        let nextFruitId = Math.floor(Math.random() * (MAX_ID - MIN_ID + 1)) + MIN_ID; 
+        const DROP_LINE_Y = 50;
+        // ★ lastDroppedBody も不要
+
+        // 物理エンジンを作成
+        const engine = Engine.create();
+        const world = engine.world;
+        world.gravity.y = 1;
+
+        // レンダラー（描画エンジン）を作成
+        const render = Render.create({
+           element: document.getElementById('game-container'), 
+            engine: engine,
+            options: {
+                width: SCREEN_WIDTH,
+                height: SCREEN_HEIGHT,
+                wireframes: false, 
+                background: '#323232'
+            }
+        });
+
+        // --- 2. 境界線（床と壁）の作成 ---
+        const floor = Bodies.rectangle(
+            SCREEN_WIDTH / 2, SCREEN_HEIGHT - (FLOOR_HEIGHT / 2), SCREEN_WIDTH, FLOOR_HEIGHT, 
+            { isStatic: true, restitution: 0.05, render: { fillStyle: '#008b8b' } }
+        );
+        const leftWall = Bodies.rectangle(
+            WALL_THICKNESS / 2, SCREEN_HEIGHT / 2, WALL_THICKNESS, SCREEN_HEIGHT, 
+            { isStatic: true, restitution: 0.1, render: { fillStyle: '#008b8b' } }
+        );
+        const rightWall = Bodies.rectangle(
+            SCREEN_WIDTH - (WALL_THICKNESS / 2), SCREEN_HEIGHT / 2, WALL_THICKNESS, SCREEN_HEIGHT, 
+            { isStatic: true, restitution: 0.1, render: { fillStyle: '#008b8b' } }
+        );
+        World.add(world, [floor, leftWall, rightWall]); 
+
+        // --- 3. フルーツ（円）の作成と操作 ---
+        function createCircle(x, y, fruitId) {
+            const spec = FRUIT_SPECS[fruitId];
+            
+            const circle = Bodies.circle(x, y, spec.radius, {
+                restitution: 0.05,  
+                friction: 0.8,
+                label: 'fruit',         
+                fruitId: fruitId,       
+                isMerging: false,       
+                render: { fillStyle: spec.color } 
+            });
+            World.add(world, circle);
+            return circle;
+        }
+
+        // マウスイベントのセットアップ
+        const mouse = Mouse.create(render.canvas);
+        const mouseConstraint = MouseConstraint.create(engine, {
+            mouse: mouse,
+            constraint: { stiffness: 0.2, render: { visible: false } }
+        });
+        World.add(world, mouseConstraint);
+        render.mouse = mouse;
+        
+        // ★★★ クリックで上部からフルーツを落下させるイベントリスナー (連続落下OK) ★★★
+        render.canvas.addEventListener('mousedown', function(event) {
+            // isDropping のチェックを削除
+            
+            const MAX_X = SCREEN_WIDTH - WALL_THICKNESS;
+            const MIN_X = WALL_THICKNESS;
+            const radius = FRUIT_SPECS[nextFruitId].radius;
+            
+            const rect = render.canvas.getBoundingClientRect();
+            let dropX = event.clientX - rect.left;
+            
+            // フルーツの端が壁の外に出ないよう制限
+            dropX = Math.max(MIN_X + radius, Math.min(dropX, MAX_X - radius));
+            
+            // 現在準備されているフルーツを、固定のY座標から落下させる
+            createCircle(dropX, DROP_LINE_Y, nextFruitId);
+            
+            // ★ 落下後のフラグ設定を削除
+            
+            // 落下が始まったら、次のフルーツをランダムに準備
+            nextFruitId = Math.floor(Math.random() * (MAX_ID - MIN_ID + 1)) + MIN_ID;
+        });
+
+        // --- 4. 衝突イベントの処理 (合体と飛び出し防止) ---
+        Matter.Events.on(engine, 'collisionStart', function(event) {
+            const pairs = event.pairs;
+
+            for (let i = 0; i < pairs.length; i++) {
+                const pair = pairs[i];
+                const bodyA = pair.bodyA;
+                const bodyB = pair.bodyB;
+
+                if (bodyA.label === 'fruit' && bodyB.label === 'fruit') {
+                    
+                    if (bodyA.isMerging || bodyB.isMerging) {
+                        continue;
+                    }
+
+                    if (bodyA.fruitId === bodyB.fruitId) {
+                        
+                        const currentId = bodyA.fruitId;
+                        
+                        if (currentId >= FRUIT_SPECS.length - 1) {
+                            continue;
+                        }
+
+                        bodyA.isMerging = true;
+                        bodyB.isMerging = true;
+                        pair.isActive = false; 
+
+                        setTimeout(() => {
+                            
+                            World.remove(world, [bodyA, bodyB]);
+
+                            const nextId = FRUIT_SPECS[currentId].nextId;
+                            const newX = (bodyA.position.x + bodyB.position.x) / 2;
+                            const newY = (bodyA.position.y + bodyB.position.y) / 2;
+                            
+                            const newFruit = createCircle(newX, newY, nextId);
+                            
+                            // 飛び出し防止の処理: 速度と回転をリセット
+                            Body.setVelocity(newFruit, { x: 0, y: 0 }); 
+                            Body.setAngularVelocity(newFruit, 0); 
+                            newFruit.friction = 0.9;
+                            newFruit.isMerging = false;
+
+                        }, 0); 
+                    }
+                }
+            }
+        });
+        
+        // --- 5. ゲームループとUIの描画 ---
+        
+        // ★ 落下完了フラグのリセット（afterUpdate）イベントは不要なため削除
+
+        // 描画の前に実行されるイベントリスナー (次のフルーツの描画)
+        Matter.Events.on(render, 'beforeRender', function() {
+            // 次に落とすフルーツを画面上部に固定して描画
+            const spec = FRUIT_SPECS[nextFruitId];
+            const context = render.context;
+
+            context.beginPath();
+            context.arc(
+                SCREEN_WIDTH / 2,     // 画面中央のX座標に固定
+                DROP_LINE_Y,          
+                spec.radius,          
+                0, 
+                2 * Math.PI
+            );
+            context.fillStyle = spec.color;
+            context.fill();
+            context.lineWidth = 3;
+            // 連続落下可能になったため、枠線は常に白色でOK
+            context.strokeStyle = '#FFFFFF'; 
+            context.stroke();
+        });
+        
+        // 物理計算のサブステップを実行
+        const runner = Runner.create();
+        Runner.run(runner, engine); 
+
+        // 描画を実行
+        Render.run(render); 
+        
+        console.log("ゲームが起動しました。画面上部のフルーツをクリックで連続で落とせます。");
+
+    </script>
+</body>
+</html>
